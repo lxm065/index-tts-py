@@ -39,7 +39,9 @@ ENCODE_PARAMS = {
             '-cq', '23',
             '-b:v', '0',
             '-c:a', 'aac',
-            '-b:a', '128k'
+            '-ar', '48000',         # 统一采样率 48kHz
+            '-ac', '2',             # 统一双声道
+            '-b:a', '192k'          # 提高音频码率
         ]
     },
     'cpu': {
@@ -50,7 +52,9 @@ ENCODE_PARAMS = {
             '-preset', 'fast',      # fast/medium/slow
             '-crf', '23',           # 恒定质量 (18=极高, 23=高)
             '-c:a', 'aac',
-            '-b:a', '128k'
+            '-ar', '48000',         # 统一采样率 48kHz
+            '-ac', '2',             # 统一双声道
+            '-b:a', '192k'          # 提高音频码率
         ]
     }
 }
@@ -102,6 +106,10 @@ def clip_video(video_name, start, end, output_path, mode='gpu'):
         output_path
     ])
     
+    # 调试：打印FFmpeg命令（可选）
+    if os.getenv('DEBUG_FFMPEG'):
+        print(f"[DEBUG] FFmpeg命令: {' '.join(cmd)}")
+    
     try:
         start_time = time.time()
         # 修复Windows编码问题：使用errors='ignore'忽略无法解码的字符
@@ -126,6 +134,8 @@ def concat_videos(clip_files, output_path, mode='gpu'):
     :param clip_files: 视频文件路径列表
     :param output_path: 输出文件路径
     :param mode: 'gpu' 或 'cpu'
+    
+    注意：拼接时不使用硬件加速解码，只在编码时使用GPU
     """
     # 创建临时列表文件
     list_file = os.path.join(OUTPUT_DIR, "clips_list.txt")
@@ -136,14 +146,27 @@ def concat_videos(clip_files, output_path, mode='gpu'):
     
     config = ENCODE_PARAMS[mode]
     
+    # 拼接命令：不使用硬件加速解码
     cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_file]
     
-    # 添加硬件加速参数（仅GPU模式）
+    # 编码参数（GPU或CPU）- 保持与剪辑时完全一致的音频参数
     if mode == 'gpu':
-        cmd.extend(config['params'])
-    
-    # 编码参数
-    cmd.extend(config['codec'])
+        # GPU编码（不使用hwaccel解码，因为concat不支持）
+        cmd.extend([
+            '-c:v', 'h264_nvenc',
+            '-preset', 'p7',
+            '-tune', 'hq',
+            '-rc', 'vbr',
+            '-cq', '23',
+            '-b:v', '0',
+            '-c:a', 'aac',
+            '-ar', '48000',        # 统一采样率
+            '-ac', '2',            # 统一声道数
+            '-b:a', '192k'         # 音频码率
+        ])
+    else:
+        # CPU编码
+        cmd.extend(config['codec'])
     
     # 输出
     cmd.append(output_path)
@@ -159,9 +182,9 @@ def concat_videos(clip_files, output_path, mode='gpu'):
     except subprocess.CalledProcessError as e:
         error_msg = getattr(e, 'stderr', str(e))
         if error_msg:
-            print(f"❌ 拼接失败：{error_msg[:200]}")
+            print(f"❌ 拼接失败：{error_msg[:500]}")  # 增加到500字符看更多错误信息
         else:
-            print(f"❌ 拼接失败：{str(e)[:200]}")
+            print(f"❌ 拼接失败：{str(e)[:500]}")
         return False
 
 
@@ -254,6 +277,33 @@ def main():
         return
     
     print(f"\n📋 共剪辑 {len(clip_files)} 个片段")
+    
+    # 验证所有片段的音频采样率
+    print("\n🔍 验证音频采样率一致性...")
+    sample_rates = {}
+    for clip_file in clip_files[:5]:  # 只检查前5个片段
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                 '-show_entries', 'stream=sample_rate',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', clip_file],
+                capture_output=True, text=True, encoding='utf-8', errors='ignore'
+            )
+            if result.returncode == 0:
+                rate = result.stdout.strip()
+                sample_rates[os.path.basename(clip_file)] = rate
+        except Exception:
+            pass
+    
+    if sample_rates:
+        unique_rates = set(sample_rates.values())
+        if len(unique_rates) == 1:
+            print(f"✅ 音频采样率统一: {list(unique_rates)[0]} Hz")
+        else:
+            print(f"⚠️  警告：检测到不同的采样率！")
+            for file, rate in sample_rates.items():
+                print(f"   {file}: {rate} Hz")
+            print(f"💡 这可能导致拼接后变音，建议重新剪辑")
     
     # 拼接所有片段
     print("\n🔗 开始拼接所有片段...")
