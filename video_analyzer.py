@@ -16,17 +16,17 @@ video_analyzer.py (GPU加速版本 - RTX 4070优化)
   ④ 时间轴对齐合并 → report.json + report.txt
 
 用法:
-    python video_analyzer_gpu.py <video_path_or_dir> <product_name> [选项]
+    python video_analyzer.py <video_path_or_dir> <product_name> [选项]
 
 示例:
     # 单视频 (GPU加速)
-    python video_analyzer_gpu.py "E:/videos/demo.mp4" "黑色T恤"
+    python video_analyzer.py "E:/videos/demo.mp4" "黑色T恤"
     
     # 目录批量模式
-    python video_analyzer_gpu.py "E:/360Downloads/t2/" "黑色T恤" --batch
+    python video_analyzer.py "E:/360Downloads/t2/" "黑色T恤" --batch
     
     # 强制使用CPU模式
-    python video_analyzer_gpu.py "E:/videos/demo.mp4" "黑色T恤" --cpu
+    python video_analyzer.py "E:/videos/demo.mp4" "黑色T恤" --cpu
 """
 
 import argparse
@@ -104,7 +104,8 @@ def check_gpu_support():
     try:
         result = subprocess.run(
             ['ffmpeg', '-hide_banner', '-encoders'],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, timeout=5,
+            encoding='utf-8', errors='ignore'
         )
         return 'h264_nvenc' in result.stdout
     except Exception:
@@ -231,7 +232,8 @@ def ffmpeg_preprocess(video_path: Path, output_dir: Path,
     ]
     
     audio_start = time.time()
-    result = subprocess.run(audio_cmd, capture_output=True, text=True)
+    result = subprocess.run(audio_cmd, capture_output=True, text=True, 
+                           encoding='utf-8', errors='ignore')
     if result.returncode != 0:
         logger.error("音频提取失败: %s", result.stderr[-300:])
         raise RuntimeError("ffmpeg 音频提取失败")
@@ -259,11 +261,11 @@ def ffmpeg_preprocess(video_path: Path, output_dir: Path,
     
     if use_gpu:
         # ═══ GPU模式 (NVIDIA NVENC) ═══
+        # 使用hwaccel解码加速，但scale在CPU上处理（兼容性最好）
         video_cmd.extend([
             "-hwaccel", "cuda",
-            "-hwaccel_output_format", "cuda",
             "-i", str(video_path),
-            "-vf", scale,
+            "-vf", scale,  # CPU上的scale滤镜
             "-r", str(COMPRESS_FPS),
             "-c:v", "h264_nvenc",
             "-preset", GPU_PRESET,
@@ -288,7 +290,8 @@ def ffmpeg_preprocess(video_path: Path, output_dir: Path,
         ])
     
     video_start = time.time()
-    result = subprocess.run(video_cmd, capture_output=True, text=True)
+    result = subprocess.run(video_cmd, capture_output=True, text=True,
+                           encoding='utf-8', errors='ignore')
     if result.returncode != 0:
         logger.error("视频压缩失败: %s", result.stderr[-300:])
         raise RuntimeError("ffmpeg 视频压缩失败")
